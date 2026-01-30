@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || hasRole('admin'));
+      allow create: if isAuthenticated() && request.auth.uid == userId;
+      allow update: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Events collection
+    match /events/{eventId} {
+      // Anyone can read events (for discovery)
+      allow read: if true; 
+      
+      // Only organizers can create
+      allow create: if hasRole('organizer');
+      
+      // Organizers can update their own events, Admins can update any
+      // Organizers can update their own events, Admins can update any. 
+      // Attendees can ONLY update the ticketsSold count (when buying a ticket).
+      allow update: if hasRole('admin') || 
+                   (hasRole('organizer') && resource.data.organizerId == request.auth.uid) ||
+                   (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ticketsSold']));
+      
+      // Only admins can delete
+      allow delete: if hasRole('admin');
+    }
+
+    // Tickets collection
+    match /tickets/{ticketId} {
+      // Users read their own tickets. 
+      // Admins read all.
+      // Organizers read tickets for their events (complex query, handled via index typically, but for single doc read:)
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || 
+        hasRole('admin') || 
+        (hasRole('organizer') && get(/databases/$(database)/documents/events/$(resource.data.eventId)).data.organizerId == request.auth.uid)
+      );
+      
+      // Users buy tickets
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      
+      // Update (e.g. check-in status)
+      allow update: if hasRole('admin') || hasRole('organizer');
+    }
+  }
+}
